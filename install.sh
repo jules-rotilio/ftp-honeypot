@@ -55,7 +55,7 @@ do_uninstall() {
         c_ok "fail2ban jail removed (existing bans were lifted)"
     fi
 
-    rm -f /etc/logrotate.d/$APP
+    rm -f /etc/logrotate.d/$APP /usr/local/sbin/$APP-bans
     rm -rf "$PREFIX"
     if id "$APP" >/dev/null 2>&1; then userdel "$APP" 2>/dev/null || true; fi
     c_ok "uninstalled. Logs kept in $LOGDIR (delete them yourself if you want)."
@@ -74,7 +74,8 @@ detect_local_networks() {
 
 do_install() {
     for f in honeypot.py systemd/$APP.service fail2ban/filter.d/$APP.conf \
-             fail2ban/jail.d/$APP.conf fail2ban/fail2ban.d/$APP.conf logrotate/$APP; do
+             fail2ban/jail.d/$APP.conf fail2ban/fail2ban.d/$APP.conf logrotate/$APP \
+             $APP-bans; do
         [[ -f "$SRC/$f" ]] || die "missing $SRC/$f - run this from the repo folder"
     done
 
@@ -132,6 +133,7 @@ do_install() {
 
         install -d -m 0755 /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/fail2ban/fail2ban.d
         install -m 0644 "$SRC/fail2ban/fail2ban.d/$APP.conf" /etc/fail2ban/fail2ban.d/$APP.conf
+        install -m 0755 "$SRC/$APP-bans" /usr/local/sbin/$APP-bans
         install -m 0644 "$SRC/fail2ban/filter.d/$APP.conf" /etc/fail2ban/filter.d/$APP.conf
         sed "s|@IGNOREIP@|$ignore|" "$SRC/fail2ban/jail.d/$APP.conf" \
             > /etc/fail2ban/jail.d/$APP.conf
@@ -154,8 +156,7 @@ Done.
   Service:         systemctl status $APP
 EOF
     [[ $WITH_FAIL2BAN -eq 1 ]] && cat <<EOF
-  Banned IPs:      fail2ban-client status $APP
-  Unban an IP:     fail2ban-client set $APP unbanip <IP>
+  Manage bans:     sudo $APP-bans          (interactive: list, details, unban)
   Whitelist:       /etc/fail2ban/jail.d/$APP.conf  (ignoreip)
 
   Add every address you connect from to ignoreip BEFORE testing, or re-run:

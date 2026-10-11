@@ -81,11 +81,23 @@ for p, n in c.most_common(20): print(n, p)'
 # service status / journal
 systemctl status ftp-honeypot
 journalctl -u ftp-honeypot -f
-
-# who is banned, unban someone
-fail2ban-client status ftp-honeypot
-fail2ban-client set ftp-honeypot unbanip 203.0.113.7
 ```
+
+### Managing bans
+
+`ftp-honeypot-bans` (installed in `/usr/local/sbin`) lists the banned IPs with how long each ban has left, shows what an IP did (credentials and commands it tried), and unbans:
+
+```bash
+sudo ftp-honeypot-bans                       # interactive menu
+sudo ftp-honeypot-bans list                  # banned IPs, since / until / time left / password attempts
+sudo ftp-honeypot-bans show 203.0.113.7      # what that IP did
+sudo ftp-honeypot-bans unban 203.0.113.7     # one or more IPs
+sudo ftp-honeypot-bans unban-all             # everyone (asks first)
+```
+
+In the menu, `u 1 3 5-7` unbans by list number, and `s 2` shows details for entry 2.
+
+Unbanning lifts the current ban but fail2ban still remembers the IP: if it comes back, its next ban is the longer, doubled one.
 
 ### Log format
 
@@ -136,6 +148,7 @@ You should see the attempt in the log, and no ban. To check banning without risk
 ```
 honeypot.py                          the honeypot
 install.sh                           installer / uninstaller
+ftp-honeypot-bans                    view / unban banned IPs (installed in /usr/local/sbin)
 systemd/ftp-honeypot.service         systemd unit
 fail2ban/filter.d/ftp-honeypot.conf  fail2ban filter
 fail2ban/jail.d/ftp-honeypot.conf    fail2ban jail (whitelist filled in by install.sh)
