@@ -49,8 +49,9 @@ do_uninstall() {
     systemctl daemon-reload
 
     if [[ -f /etc/fail2ban/jail.d/$APP.conf ]]; then
-        rm -f /etc/fail2ban/jail.d/$APP.conf /etc/fail2ban/filter.d/$APP.conf
-        systemctl reload fail2ban 2>/dev/null || systemctl restart fail2ban 2>/dev/null || true
+        rm -f /etc/fail2ban/jail.d/$APP.conf /etc/fail2ban/filter.d/$APP.conf \
+              /etc/fail2ban/fail2ban.d/$APP.conf
+        systemctl restart fail2ban 2>/dev/null || true
         c_ok "fail2ban jail removed (existing bans were lifted)"
     fi
 
@@ -73,7 +74,7 @@ detect_local_networks() {
 
 do_install() {
     for f in honeypot.py systemd/$APP.service fail2ban/filter.d/$APP.conf \
-             fail2ban/jail.d/$APP.conf logrotate/$APP; do
+             fail2ban/jail.d/$APP.conf fail2ban/fail2ban.d/$APP.conf logrotate/$APP; do
         [[ -f "$SRC/$f" ]] || die "missing $SRC/$f - run this from the repo folder"
     done
 
@@ -129,7 +130,8 @@ do_install() {
         c_info "whitelisting (never banned): 127.0.0.1/8 ::1 ${ignore:-<nothing else>}"
         [[ -n "$ignore" ]] || c_warn "nothing but loopback is whitelisted: a LAN machine touching port 21 WILL be banned (use --ignore-local or --ignore)"
 
-        install -d -m 0755 /etc/fail2ban/filter.d /etc/fail2ban/jail.d
+        install -d -m 0755 /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/fail2ban/fail2ban.d
+        install -m 0644 "$SRC/fail2ban/fail2ban.d/$APP.conf" /etc/fail2ban/fail2ban.d/$APP.conf
         install -m 0644 "$SRC/fail2ban/filter.d/$APP.conf" /etc/fail2ban/filter.d/$APP.conf
         sed "s|@IGNOREIP@|$ignore|" "$SRC/fail2ban/jail.d/$APP.conf" \
             > /etc/fail2ban/jail.d/$APP.conf
@@ -137,10 +139,11 @@ do_install() {
 
         fail2ban-client -t >/dev/null || die "fail2ban config test failed (run: fail2ban-client -t)"
         systemctl enable --now fail2ban >/dev/null 2>&1
-        systemctl reload fail2ban 2>/dev/null || systemctl restart fail2ban
+        # restart, not reload: dbpurgeage is a server setting
+        systemctl restart fail2ban
         sleep 2
         fail2ban-client status "$APP" >/dev/null 2>&1 \
-            && c_ok "fail2ban jail '$APP' active: one connection to port 21 = 1 day ban on all ports" \
+            && c_ok "fail2ban jail '$APP' active: one connection to port 21 = 1 month ban on all ports (repeat: up to 1 year)" \
             || c_warn "fail2ban jail not up yet - check: fail2ban-client status $APP"
     fi
 

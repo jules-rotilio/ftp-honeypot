@@ -17,7 +17,7 @@ attacker ──► :21 honeypot.py ──► /var/log/ftp-honeypot/ftp-honeypot.
 - **Not root.** Runs as a dedicated system user. Its only privilege is `CAP_NET_BIND_SERVICE` (binding port 21), inside a heavily sandboxed systemd unit.
 - **Brute-force friendly logging.** Captures `USER`/`PASS` pairs and any other command, as one JSON object per line.
 - **Resource limits.** Max concurrent sessions, max commands per session, idle timeout, and a 2 s delay on each password attempt.
-- **Auto-ban.** One connection = 1 day ban on every port. Repeat offenders get 2 d, 4 d… up to 4 weeks.
+- **Auto-ban.** One connection = 1 month ban on every port. Repeat offenders get 2, 4, 8 months, then 1 year. Ban history is kept for a year, so bans survive reboots.
 - **Explicit whitelist.** Only loopback is whitelisted by default. Add your LAN with `--ignore-local` and any other address with `--ignore`, so you can't lock yourself out.
 
 ## Requirements
@@ -106,6 +106,7 @@ Logs rotate weekly and 8 weeks are kept (`/etc/logrotate.d/ftp-honeypot`).
 |---|---|
 | Port, banner, log path, max sessions | `Environment=` lines in `/etc/systemd/system/ftp-honeypot.service`, then `systemctl daemon-reload && systemctl restart ftp-honeypot` |
 | Ban time, whitelist (`ignoreip`) | `/etc/fail2ban/jail.d/ftp-honeypot.conf`, then `systemctl reload fail2ban` |
+| How long ban history is kept (`dbpurgeage`, must be ≥ `bantime.maxtime`) | `/etc/fail2ban/fail2ban.d/ftp-honeypot.conf`, then `systemctl restart fail2ban` |
 | What counts as a hit | `/etc/fail2ban/filter.d/ftp-honeypot.conf` |
 
 To ban on failed **logins** only instead of any connection, change the filter's `failregex` to match `"event": "login"`.
@@ -138,5 +139,6 @@ install.sh                           installer / uninstaller
 systemd/ftp-honeypot.service         systemd unit
 fail2ban/filter.d/ftp-honeypot.conf  fail2ban filter
 fail2ban/jail.d/ftp-honeypot.conf    fail2ban jail (whitelist filled in by install.sh)
+fail2ban/fail2ban.d/ftp-honeypot.conf  fail2ban server setting: keep ban history 1 year
 logrotate/ftp-honeypot               log rotation
 ```
