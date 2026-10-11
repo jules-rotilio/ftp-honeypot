@@ -18,7 +18,7 @@ attacker ──► :21 honeypot.py ──► /var/log/ftp-honeypot/ftp-honeypot.
 - **Brute-force friendly logging.** Captures `USER`/`PASS` pairs and any other command, as one JSON object per line.
 - **Resource limits.** Max concurrent sessions, max commands per session, idle timeout, and a 2 s delay on each password attempt.
 - **Auto-ban.** One connection = 1 day ban on every port. Repeat offenders get 2 d, 4 d… up to 4 weeks.
-- **Safe defaults.** The installer whitelists loopback and your LAN (IPv4 and IPv6) so you can't lock yourself out.
+- **Explicit whitelist.** Only loopback is whitelisted by default. Add your LAN with `--ignore-local` and any other address with `--ignore`, so you can't lock yourself out.
 
 ## Requirements
 
@@ -37,18 +37,26 @@ cd ftp-honeypot
 sudo ./install.sh
 ```
 
-If you ever connect to the server from **outside** your LAN (a VPS, your phone on 4G, work…), whitelist those addresses so a test doesn't ban you:
+By default **only loopback** is whitelisted: any other machine that touches port 21, including your own PC on the LAN, gets banned. Whitelist what you use before testing:
 
 ```bash
+# your whole local network (auto-detected, IPv4 and IPv6)
+sudo ./install.sh --ignore-local
+
+# specific addresses: a VPS, your phone on 4G, work…
 sudo ./install.sh --ignore "203.0.113.10 2001:db8:1234::/48"
+
+# both
+sudo ./install.sh --ignore-local --ignore "203.0.113.10"
 ```
 
 Other options:
 
 | Command | What it does |
 |---|---|
-| `sudo ./install.sh` | Install honeypot + fail2ban jail, auto-whitelist your LAN |
-| `sudo ./install.sh --ignore "IP NET …"` | Also whitelist these IPs / CIDR networks |
+| `sudo ./install.sh` | Install honeypot + fail2ban jail, whitelist loopback only |
+| `sudo ./install.sh --ignore-local` | Also whitelist your local networks (auto-detected) |
+| `sudo ./install.sh --ignore "IP NET …"` | Also whitelist these IPs / CIDR networks (can be repeated) |
 | `sudo ./install.sh --no-fail2ban` | Honeypot and logging only, no banning |
 | `sudo ./install.sh --uninstall` | Remove everything (logs are kept) |
 

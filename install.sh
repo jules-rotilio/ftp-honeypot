@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # install.sh - install / uninstall ftp-honeypot on Debian (tested target: Debian 13 "trixie")
 #
-#   sudo ./install.sh                         install with fail2ban, auto-detect LAN to whitelist
+#   sudo ./install.sh                         install with fail2ban (only loopback is whitelisted)
+#   sudo ./install.sh --ignore-local          also whitelist your local networks (auto-detected LAN)
 #   sudo ./install.sh --ignore "1.2.3.4 2001:db8::/48"   also whitelist these IPs / networks
 #   sudo ./install.sh --no-fail2ban           honeypot + logging only, no banning
 #   sudo ./install.sh --uninstall             remove everything (logs are kept)
@@ -15,6 +16,7 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 WITH_FAIL2BAN=1
 EXTRA_IGNORE=""
+IGNORE_LOCAL=0
 ACTION=install
 
 c_ok()   { printf '\033[32m[ok]\033[0m %s\n' "$*"; }
@@ -22,11 +24,13 @@ c_info() { printf '\033[36m[..]\033[0m %s\n' "$*"; }
 c_warn() { printf '\033[33m[!!]\033[0m %s\n' "$*"; }
 die()    { printf '\033[31m[xx]\033[0m %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --ignore)       EXTRA_IGNORE="${2:-}"; shift 2 ;;
+        --ignore)       [[ -n "${2:-}" ]] || die "--ignore needs a value, e.g. --ignore \"1.2.3.4\""
+                        EXTRA_IGNORE="$EXTRA_IGNORE $2"; shift 2 ;;
+        --ignore-local) IGNORE_LOCAL=1; shift ;;
         --no-fail2ban)  WITH_FAIL2BAN=0; shift ;;
         --uninstall)    ACTION=uninstall; shift ;;
         -h|--help)      usage ;;
@@ -116,10 +120,14 @@ do_install() {
     c_ok "service $APP is running"
 
     if [[ $WITH_FAIL2BAN -eq 1 ]]; then
-        local nets ignore
-        nets="$(detect_local_networks)"
+        local nets="" ignore
+        if [[ $IGNORE_LOCAL -eq 1 ]]; then
+            nets="$(detect_local_networks)"
+            [[ -n "$nets" ]] || c_warn "--ignore-local: no local network detected"
+        fi
         ignore="$(echo "$nets $EXTRA_IGNORE" | xargs)"
         c_info "whitelisting (never banned): 127.0.0.1/8 ::1 ${ignore:-<nothing else>}"
+        [[ -n "$ignore" ]] || c_warn "nothing but loopback is whitelisted: a LAN machine touching port 21 WILL be banned (use --ignore-local or --ignore)"
 
         install -d -m 0755 /etc/fail2ban/filter.d /etc/fail2ban/jail.d
         install -m 0644 "$SRC/fail2ban/filter.d/$APP.conf" /etc/fail2ban/filter.d/$APP.conf
@@ -147,8 +155,9 @@ EOF
   Unban an IP:     fail2ban-client set $APP unbanip <IP>
   Whitelist:       /etc/fail2ban/jail.d/$APP.conf  (ignoreip)
 
-  If you connect from outside your LAN (VPS, phone, office), add that IP to
-  ignoreip BEFORE testing, or re-run: sudo $0 --ignore "<your IP>"
+  Add every address you connect from to ignoreip BEFORE testing, or re-run:
+    sudo $0 --ignore "<your IP>"      (one or more IPs / networks)
+    sudo $0 --ignore-local            (your whole LAN)
 EOF
     echo
     c_warn "Remember to forward TCP 21 on your router to this machine (and disable any FTP on the router itself)."
