@@ -38,7 +38,7 @@ done
 command -v systemctl >/dev/null || die "systemd is required"
 
 # --------------------------------------------------------------------------
-uninstall() {
+do_uninstall() {
     c_info "stopping and removing $APP"
     systemctl disable --now "$APP.service" 2>/dev/null || true
     rm -f /etc/systemd/system/$APP.service
@@ -67,7 +67,7 @@ detect_local_networks() {
     } | { grep -E '/' || true; } | { grep -v '^fe80' || true; } | sort -u | tr '\n' ' '
 }
 
-install() {
+do_install() {
     for f in honeypot.py systemd/$APP.service fail2ban/filter.d/$APP.conf \
              fail2ban/jail.d/$APP.conf logrotate/$APP; do
         [[ -f "$SRC/$f" ]] || die "missing $SRC/$f - run this from the repo folder"
@@ -121,6 +121,7 @@ install() {
         ignore="$(echo "$nets $EXTRA_IGNORE" | xargs)"
         c_info "whitelisting (never banned): 127.0.0.1/8 ::1 ${ignore:-<nothing else>}"
 
+        install -d -m 0755 /etc/fail2ban/filter.d /etc/fail2ban/jail.d
         install -m 0644 "$SRC/fail2ban/filter.d/$APP.conf" /etc/fail2ban/filter.d/$APP.conf
         sed "s|@IGNOREIP@|$ignore|" "$SRC/fail2ban/jail.d/$APP.conf" \
             > /etc/fail2ban/jail.d/$APP.conf
@@ -154,6 +155,6 @@ EOF
 }
 
 case "$ACTION" in
-    install)   install ;;
-    uninstall) uninstall ;;
+    install)   do_install ;;
+    uninstall) do_uninstall ;;
 esac
