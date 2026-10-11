@@ -32,7 +32,7 @@ The installer pulls in `python3`, `logrotate`, `fail2ban` and `nftables` with `a
 ## Install
 
 ```bash
-git clone https://github.com/<you>/ftp-honeypot.git
+git clone https://github.com/jules-rotilio/ftp-honeypot.git
 cd ftp-honeypot
 sudo ./install.sh
 ```
