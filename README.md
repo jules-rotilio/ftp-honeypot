@@ -2,12 +2,12 @@
 
 A tiny, low-interaction **FTP honeypot** for Debian. It listens on TCP **21**, pretends to be an FTP server, logs every connection and every username/password tried, and **never** lets anyone in.
 
-Paired with **fail2ban**, any IP that touches port 21 is banned on **all ports** of the server. Nothing legitimate ever talks to this port, so every hit is a scanner or a bot.
+Paired with **fail2ban**, any IP that touches port 21 is banned on **all ports** of the server, including services running in **Docker** containers. Nothing legitimate ever talks to this port, so every hit is a scanner or a bot.
 
 ```
 attacker ──► :21 honeypot.py ──► /var/log/ftp-honeypot/ftp-honeypot.log
                                           │
-                                       fail2ban ──► nftables: ban IP on all ports
+                                       fail2ban ──► nftables (prerouting): drop everything from that IP
 ```
 
 ## Features
@@ -17,7 +17,7 @@ attacker ──► :21 honeypot.py ──► /var/log/ftp-honeypot/ftp-honeypot.
 - **Not root.** Runs as a dedicated system user. Its only privilege is `CAP_NET_BIND_SERVICE` (binding port 21), inside a heavily sandboxed systemd unit.
 - **Brute-force friendly logging.** Captures `USER`/`PASS` pairs and any other command, as one JSON object per line.
 - **Resource limits.** Max concurrent sessions, max commands per session, idle timeout, and a 2 s delay on each password attempt.
-- **Auto-ban.** One connection = 1 month ban on every port. Repeat offenders get 2, 4, 8 months, then 1 year. Ban history is kept for a year, so bans survive reboots.
+- **Auto-ban.** One connection = 1 month ban on every port and protocol, host services and Docker containers alike. Repeat offenders get 2, 4, 8 months, then 1 year. Ban history is kept for a year, so bans survive reboots.
 - **Explicit whitelist.** Only loopback is whitelisted by default. Add your LAN with `--ignore-local` and any other address with `--ignore`, so you can't lock yourself out.
 
 ## Requirements
@@ -137,6 +137,8 @@ QUIT
 You should see the attempt in the log, and no ban. To check banning without risk, look at `fail2ban-client status ftp-honeypot` after a few hours online: the internet scans port 21 constantly.
 
 ## Security notes
+
+- **Bans cover Docker too.** fail2ban's usual nftables ban sits in the `input` hook, which Docker-published ports never go through (their traffic is forwarded to the container). This jail instead drops banned IPs in the `prerouting` hook, before Docker sees the packet, in its own `f2b-honeypot` table so it doesn't touch your other jails. Check it with `sudo nft list table inet f2b-honeypot`.
 
 - The honeypot never accepts a login, never opens a data connection and never touches the filesystem except its own log file.
 - Input is capped at 512 bytes per line and 20 commands per session, and everything is JSON-escaped before logging. A forged `"event": "connect"` string sent by an attacker does **not** trigger the fail2ban filter.
