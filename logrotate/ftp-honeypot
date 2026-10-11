@@ -1,0 +1,10 @@
+/var/log/ftp-honeypot/ftp-honeypot.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su ftp-honeypot ftp-honeypot
+}
