@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh the DB-IP GeoIP database used by ftp-honeypot-bans
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ftp-honeypot-geoip-update
+StateDirectory=ftp-honeypot
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/ftp-honeypot

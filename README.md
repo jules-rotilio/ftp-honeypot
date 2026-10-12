@@ -58,6 +58,7 @@ Other options:
 | `sudo ./install.sh --ignore-local` | Also whitelist your local networks (auto-detected) |
 | `sudo ./install.sh --ignore "IP NET …"` | Also whitelist these IPs / CIDR networks (can be repeated) |
 | `sudo ./install.sh --no-fail2ban` | Honeypot and logging only, no banning |
+| `sudo ./install.sh --no-geoip` | Don't download the GeoIP database (no country / city in `ftp-honeypot-bans`) |
 | `sudo ./install.sh --uninstall` | Remove everything (logs are kept) |
 
 Re-running the installer is safe; it updates files in place.
@@ -85,17 +86,30 @@ journalctl -u ftp-honeypot -f
 
 ### Managing bans
 
-`ftp-honeypot-bans` (installed in `/usr/local/sbin`) lists the banned IPs with how long each ban has left, shows what an IP did (credentials and commands it tried), and unbans:
+`ftp-honeypot-bans` (installed in `/usr/local/sbin`) lists the banned IPs with their country and city and how long each ban has left, shows what an IP did (credentials and commands it tried), and unbans:
 
 ```bash
 sudo ftp-honeypot-bans                       # interactive menu
-sudo ftp-honeypot-bans list                  # banned IPs, since / until / time left / password attempts
-sudo ftp-honeypot-bans show 203.0.113.7      # what that IP did
+sudo ftp-honeypot-bans list                  # banned IPs: location, since / until / time left / password attempts
+sudo ftp-honeypot-bans show 203.0.113.7      # where it is and what it did
+sudo ftp-honeypot-bans countries             # banned IPs per country
 sudo ftp-honeypot-bans unban 203.0.113.7     # one or more IPs
 sudo ftp-honeypot-bans unban-all             # everyone (asks first)
 ```
 
-In the menu, `u 1 3 5-7` unbans by list number, and `s 2` shows details for entry 2.
+In the menu, `u 1 3 5-7` unbans by list number, `s 2` shows details for entry 2, and `c` shows the per-country summary.
+
+```
+  #    IP              location                  banned since     until            left      logins
+  1    81.2.69.142     GB London                 2026-10-10 15:54 2026-11-09 14:54 28d 0h    1
+  2    89.160.20.112   SE Linköping              2026-10-11 15:54 2026-11-10 14:54 29d 0h    0
+```
+
+#### Locations
+
+Locations come from the free [DB-IP](https://db-ip.com) **IP to City Lite** database, stored locally in `/var/lib/ftp-honeypot/` and looked up offline: no account or API key, and banned IPs are never sent to an outside service. A systemd timer (`ftp-honeypot-geoip-update.timer`) downloads the new edition every month; run `sudo ftp-honeypot-geoip-update` to refresh it by hand.
+
+Treat locations as approximate. Free databases are usually right about the country but often wrong about the city, and many scanners run from cloud servers or VPNs, so the location is that of the server, not of the person behind it.
 
 Unbanning lifts the current ban but fail2ban still remembers the IP: if it comes back, its next ban is the longer, doubled one.
 
@@ -151,9 +165,15 @@ You should see the attempt in the log, and no ban. To check banning without risk
 honeypot.py                          the honeypot
 install.sh                           installer / uninstaller
 ftp-honeypot-bans                    view / unban banned IPs (installed in /usr/local/sbin)
+geoip/ftp-honeypot-geoip-update      downloads the monthly DB-IP database
+systemd/ftp-honeypot-geoip-update.*  monthly refresh (service + timer)
 systemd/ftp-honeypot.service         systemd unit
 fail2ban/filter.d/ftp-honeypot.conf  fail2ban filter
 fail2ban/jail.d/ftp-honeypot.conf    fail2ban jail (whitelist filled in by install.sh)
 fail2ban/fail2ban.d/ftp-honeypot.conf  fail2ban server setting: keep ban history 1 year
 logrotate/ftp-honeypot               log rotation
 ```
+
+## Credits
+
+IP geolocation by [DB-IP](https://db-ip.com), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# ftp-honeypot-geoip-update - download / refresh the free DB-IP "IP to City Lite"
+# database used by ftp-honeypot-bans to show the country and city of banned IPs.
+#
+# Run monthly by ftp-honeypot-geoip-update.timer. No account or API key needed.
+# Data: IP Geolocation by DB-IP (https://db-ip.com), CC BY 4.0.
+
+set -euo pipefail
+
+DEST=${GEOIP_DB:-/var/lib/ftp-honeypot/dbip-city-lite.mmdb}
+BASE=https://download.db-ip.com/free
+
+dir=$(dirname "$DEST")
+mkdir -p "$dir"
+tmp=$(mktemp "$dir/.dbip.XXXXXX")
+trap 'rm -f "$tmp" "$tmp.gz"' EXIT
+
+# A new file is published at the start of each month: try this month, then last month.
+for month in "$(date -u +%Y-%m)" "$(date -u -d "$(date -u +%Y-%m-15) -1 month" +%Y-%m)"; do
+    url="$BASE/dbip-city-lite-$month.mmdb.gz"
+    if curl -fsSL --retry 2 --max-time 300 -o "$tmp.gz" "$url"; then
+        gunzip -c "$tmp.gz" > "$tmp"
+        # Refuse to install anything the reader can't open.
+        python3 -c 'import sys, maxminddb; maxminddb.open_database(sys.argv[1]).get("1.1.1.1")' "$tmp" 2>/dev/null \
+            || { echo "downloaded file is not a valid database: $url" >&2; exit 1; }
+        chmod 0644 "$tmp"
+        mv -f "$tmp" "$DEST"
+        echo "GeoIP database updated: $month -> $DEST"
+        exit 0
+    fi
+done
+
+echo "could not download the DB-IP database from $BASE" >&2
+exit 1

@@ -5,6 +5,7 @@
 #   sudo ./install.sh --ignore-local          also whitelist your local networks (auto-detected LAN)
 #   sudo ./install.sh --ignore "1.2.3.4 2001:db8::/48"   also whitelist these IPs / networks
 #   sudo ./install.sh --no-fail2ban           honeypot + logging only, no banning
+#   sudo ./install.sh --no-geoip              don't download the DB-IP database (no country/city in ftp-honeypot-bans)
 #   sudo ./install.sh --uninstall             remove everything (logs are kept)
 
 set -euo pipefail
@@ -15,6 +16,7 @@ LOGDIR=/var/log/$APP
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 WITH_FAIL2BAN=1
+WITH_GEOIP=1
 EXTRA_IGNORE=""
 IGNORE_LOCAL=0
 ACTION=install
@@ -24,7 +26,7 @@ c_info() { printf '\033[36m[..]\033[0m %s\n' "$*"; }
 c_warn() { printf '\033[33m[!!]\033[0m %s\n' "$*"; }
 die()    { printf '\033[31m[xx]\033[0m %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -32,6 +34,7 @@ while [[ $# -gt 0 ]]; do
                         EXTRA_IGNORE="$EXTRA_IGNORE $2"; shift 2 ;;
         --ignore-local) IGNORE_LOCAL=1; shift ;;
         --no-fail2ban)  WITH_FAIL2BAN=0; shift ;;
+        --no-geoip)     WITH_GEOIP=0; shift ;;
         --uninstall)    ACTION=uninstall; shift ;;
         -h|--help)      usage ;;
         *)              die "unknown option: $1 (see --help)" ;;
@@ -45,7 +48,9 @@ command -v systemctl >/dev/null || die "systemd is required"
 do_uninstall() {
     c_info "stopping and removing $APP"
     systemctl disable --now "$APP.service" 2>/dev/null || true
-    rm -f /etc/systemd/system/$APP.service
+    systemctl disable --now "$APP-geoip-update.timer" 2>/dev/null || true
+    rm -f /etc/systemd/system/$APP.service \
+          /etc/systemd/system/$APP-geoip-update.service /etc/systemd/system/$APP-geoip-update.timer
     systemctl daemon-reload
 
     if [[ -f /etc/fail2ban/jail.d/$APP.conf ]]; then
@@ -55,8 +60,8 @@ do_uninstall() {
         c_ok "fail2ban jail removed (existing bans were lifted)"
     fi
 
-    rm -f /etc/logrotate.d/$APP /usr/local/sbin/$APP-bans
-    rm -rf "$PREFIX"
+    rm -f /etc/logrotate.d/$APP /usr/local/sbin/$APP-bans /usr/local/sbin/$APP-geoip-update
+    rm -rf "$PREFIX" /var/lib/$APP
     if id "$APP" >/dev/null 2>&1; then userdel "$APP" 2>/dev/null || true; fi
     c_ok "uninstalled. Logs kept in $LOGDIR (delete them yourself if you want)."
 }
@@ -75,7 +80,8 @@ detect_local_networks() {
 do_install() {
     for f in honeypot.py systemd/$APP.service fail2ban/filter.d/$APP.conf \
              fail2ban/jail.d/$APP.conf fail2ban/fail2ban.d/$APP.conf logrotate/$APP \
-             $APP-bans; do
+             $APP-bans geoip/$APP-geoip-update systemd/$APP-geoip-update.service \
+             systemd/$APP-geoip-update.timer; do
         [[ -f "$SRC/$f" ]] || die "missing $SRC/$f - run this from the repo folder"
     done
 
@@ -93,6 +99,7 @@ do_install() {
     c_info "installing packages"
     pkgs=(python3 logrotate)
     [[ $WITH_FAIL2BAN -eq 1 ]] && pkgs+=(fail2ban nftables)
+    [[ $WITH_FAIL2BAN -eq 1 && $WITH_GEOIP -eq 1 ]] && pkgs+=(python3-maxminddb curl)
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
     apt-get install -y -qq "${pkgs[@]}" >/dev/null
@@ -134,6 +141,23 @@ do_install() {
         install -d -m 0755 /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/fail2ban/fail2ban.d
         install -m 0644 "$SRC/fail2ban/fail2ban.d/$APP.conf" /etc/fail2ban/fail2ban.d/$APP.conf
         install -m 0755 "$SRC/$APP-bans" /usr/local/sbin/$APP-bans
+        if [[ $WITH_GEOIP -eq 1 ]]; then
+            install -m 0755 "$SRC/geoip/$APP-geoip-update" /usr/local/sbin/$APP-geoip-update
+            install -m 0644 "$SRC/systemd/$APP-geoip-update.service" "$SRC/systemd/$APP-geoip-update.timer" \
+                /etc/systemd/system/
+            systemctl daemon-reload
+            systemctl enable --now "$APP-geoip-update.timer" >/dev/null 2>&1 || true
+            if [[ -s /var/lib/$APP/dbip-city-lite.mmdb ]]; then
+                c_ok "GeoIP database present (refreshed monthly)"
+            else
+                c_info "downloading the DB-IP GeoIP database (refreshed monthly)"
+                if /usr/local/sbin/$APP-geoip-update >/dev/null; then
+                    c_ok "GeoIP database installed: ftp-honeypot-bans shows country and city"
+                else
+                    c_warn "GeoIP download failed; bans work, locations won't show. Retry: sudo $APP-geoip-update"
+                fi
+            fi
+        fi
         install -m 0644 "$SRC/fail2ban/filter.d/$APP.conf" /etc/fail2ban/filter.d/$APP.conf
         sed "s|@IGNOREIP@|$ignore|" "$SRC/fail2ban/jail.d/$APP.conf" \
             > /etc/fail2ban/jail.d/$APP.conf

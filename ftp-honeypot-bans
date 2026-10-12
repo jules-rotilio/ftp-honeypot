@@ -6,11 +6,21 @@
 #   sudo ftp-honeypot-bans show <IP>       what this IP did (honeypot log)
 #   sudo ftp-honeypot-bans unban <IP>...   unban one or more IPs
 #   sudo ftp-honeypot-bans unban-all       unban everyone (asks first)
+#   sudo ftp-honeypot-bans countries       banned IPs per country
+#
+# Locations come from the free DB-IP City Lite database (IP Geolocation by
+# DB-IP, https://db-ip.com, CC BY 4.0), refreshed monthly by
+# ftp-honeypot-geoip-update. They are approximate, city-level at best.
 
 set -uo pipefail
 
+# Column alignment needs a UTF-8 locale (city names like "Linköping").
+# Test what bash really does: a configured but missing locale falls back to C.
+_u="ö"; (( ${#_u} == 1 )) || export LC_ALL=C.UTF-8; unset _u
+
 JAIL=ftp-honeypot
 LOG=/var/log/ftp-honeypot/ftp-honeypot.log
+GEOIP_DB=${GEOIP_DB:-/var/lib/ftp-honeypot/dbip-city-lite.mmdb}
 
 if [[ -t 1 ]]; then
     B=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; CYN=$'\033[36m'; R=$'\033[0m'
@@ -58,7 +68,91 @@ load_bans() {
 }
 
 # Number of password attempts an IP made, from the honeypot log
-attempts() { grep -Fc "\"event\": \"login\", \"src\": \"$1\"" "$LOG" 2>/dev/null || true; }
+attempts() { local n; n=$(grep -Fc "\"event\": \"login\", \"src\": \"$1\"" "$LOG" 2>/dev/null); echo "${n:-0}"; }
+
+# --- geolocation -----------------------------------------------------------
+
+declare -A GEO_CC=() GEO_COUNTRY=() GEO_CITY=() GEO_REGION=()
+GEO_OK=0       # 1 = lookups work
+GEO_WHY=nodb   # why they don't: nodb | nomodule
+
+# Look up every IP given as arguments in one go and fill the GEO_* arrays.
+geo_load() {
+    GEO_OK=0; GEO_WHY=nodb
+    [[ -r $GEOIP_DB ]] || return 0
+    local out rc ip cc country city region
+    out=$(printf '%s\n' "$@" | python3 -c '
+import sys
+try:
+    import maxminddb
+    db = maxminddb.open_database(sys.argv[1])
+except Exception:
+    sys.exit(3)
+def name(d):
+    n = (d or {}).get("names", {})
+    return (n.get("en") or next(iter(n.values()), "")).replace("\t", " ")
+for ip in sys.stdin.read().split():
+    try:
+        r = db.get(ip) or {}
+    except ValueError:
+        r = {}
+    country = r.get("country") or r.get("registered_country") or {}
+    subs = r.get("subdivisions") or [{}]
+    print("\t".join([ip, country.get("iso_code", ""), name(country), name(r.get("city")), name(subs[0])]))
+' "$GEOIP_DB" 2>/dev/null)
+    rc=$?
+    if (( rc == 3 )); then GEO_WHY=nomodule; return 0; fi
+    (( rc == 0 )) || return 0
+    GEO_OK=1
+    while IFS=$'\t' read -r ip cc country city region; do
+        [[ -n $ip ]] || continue
+        GEO_CC[$ip]=$cc; GEO_COUNTRY[$ip]=$country; GEO_CITY[$ip]=$city; GEO_REGION[$ip]=$region
+    done <<< "$out"
+    return 0
+}
+
+# Why there is no location, as a hint
+geo_hint() {
+    if [[ $GEO_WHY == nomodule ]]; then
+        echo "the python3-maxminddb package is missing: sudo apt install python3-maxminddb"
+    else
+        echo "no GeoIP database yet: sudo ftp-honeypot-geoip-update"
+    fi
+}
+
+# printf %-Ns counts bytes, so "Linköping" would shift the columns; pad by characters.
+pad() { local s=$1 n=$2; printf '%s%*s' "$s" $(( n > ${#s} ? n - ${#s} : 0 )) ""; }
+
+# Short form for the list: "GB London", "FR", "-"
+geo_short() {
+    local ip=$1 cc=${GEO_CC[$1]:-} city=${GEO_CITY[$1]:-}
+    [[ -n $cc ]] || { echo "-"; return; }
+    if [[ -n $city ]]; then echo "$cc ${city:0:22}"; else echo "$cc"; fi
+}
+
+# Long form for show: "London, England, United Kingdom (GB)"
+geo_long() {
+    local ip=$1 parts=() x
+    for x in "${GEO_CITY[$ip]:-}" "${GEO_REGION[$ip]:-}" "${GEO_COUNTRY[$ip]:-}"; do
+        [[ -n $x ]] && parts+=("$x")
+    done
+    (( ${#parts[@]} )) || { echo "not in the database"; return; }
+    local IFS=,
+    local out="${parts[*]}"
+    out=${out//,/, }
+    [[ -n ${GEO_CC[$ip]:-} ]] && out+=" (${GEO_CC[$ip]})"
+    echo "$out"
+}
+
+geo_footer() {
+    if (( GEO_OK )); then
+        echo "  ${DIM}locations are approximate · IP geolocation by DB-IP (db-ip.com)${R}"
+    else
+        echo "  ${DIM}no location data: $(geo_hint)${R}"
+    fi
+}
+
+# --- views -----------------------------------------------------------------
 
 print_list() {
     load_bans
@@ -67,19 +161,49 @@ print_list() {
         echo "  ${GRN}No IP is currently banned.${R}"
         return
     fi
-    printf "  ${B}%-4s %-39s %-16s %-16s %-9s %s${R}\n" "#" "IP" "banned since" "until" "left" "logins"
-    local i
+    geo_load "${IPS[@]}"
+    local w=15 i
+    for i in "${IPS[@]}"; do (( ${#i} > w )) && w=${#i}; done   # IP column fits the longest IP
+    printf "  ${B}%-4s %-${w}s  %-25s %-16s %-16s %-9s %s${R}\n" "#" "IP" "location" "banned since" "until" "left" "logins"
     for i in "${!IPS[@]}"; do
-        printf "  %-4s %-39s %-16s %-16s %-9s %s\n" \
-            "$((i+1))" "${IPS[i]}" "${SINCE[i]}" "${UNTIL[i]}" "${LEFT[i]}" "$(attempts "${IPS[i]}")"
+        printf "  %-4s %-${w}s  %s %-16s %-16s %-9s %s\n" \
+            "$((i+1))" "${IPS[i]}" "$(pad "$(geo_short "${IPS[i]}")" 25)" "${SINCE[i]}" "${UNTIL[i]}" "${LEFT[i]}" "$(attempts "${IPS[i]}")"
     done
     echo "  ${DIM}${#IPS[@]} banned · times are server local time${R}"
+    geo_footer
+}
+
+# Banned IPs per country, most first
+print_countries() {
+    load_bans
+    echo
+    (( ${#IPS[@]} )) || { echo "  ${GRN}No IP is currently banned.${R}"; return; }
+    geo_load "${IPS[@]}"
+    (( GEO_OK )) || { geo_footer; return; }
+    local ip key
+    declare -A count=()
+    for ip in "${IPS[@]}"; do
+        key="${GEO_CC[$ip]:-??}"$'\t'"${GEO_COUNTRY[$ip]:-unknown}"
+        count[$key]=$(( ${count[$key]:-0} + 1 ))
+    done
+    printf "  ${B}%-6s %-4s %s${R}\n" "bans" "cc" "country"
+    for key in "${!count[@]}"; do printf '%s\t%s\n' "${count[$key]}" "$key"; done \
+        | sort -t$'\t' -k1,1nr -k3 \
+        | while IFS=$'\t' read -r n cc name; do printf "  %-6s %-4s %s\n" "$n" "$cc" "$name"; done
+    echo "  ${DIM}${#IPS[@]} banned IPs in ${#count[@]} countries${R}"
+    geo_footer
 }
 
 show_ip() {
     local ip=$1
     echo
     echo "  ${B}$ip${R}"
+    geo_load "$ip"
+    if (( GEO_OK )); then
+        echo "  location:    $(geo_long "$ip")   ${DIM}(approximate · DB-IP)${R}"
+    else
+        echo "  location:    ${DIM}unknown ($(geo_hint))${R}"
+    fi
     if [[ ! -r $LOG ]]; then echo "  (log $LOG not readable)"; return; fi
     local first last n
     n=$(grep -Fc "\"src\": \"$ip\"" "$LOG" 2>/dev/null || true)
@@ -162,7 +286,7 @@ menu() {
     print_list
     while true; do
         echo
-        echo "  ${B}[l]${R}ist  ${B}[s]${R}how <#|IP>  ${B}[u]${R}nban <#|IP> (e.g. 1 3 5-7)  ${B}[a]${R}ll unban  ${B}[q]${R}uit"
+        echo "  ${B}[l]${R}ist  ${B}[s]${R}how <#|IP>  ${B}[u]${R}nban <#|IP> (e.g. 1 3 5-7)  ${B}[a]${R}ll unban  ${B}[c]${R}ountries  ${B}[q]${R}uit"
         read -r -p "  > " choice arg || { echo; return; }
         case "$choice" in
             l|L|"")  print_list ;;
@@ -173,6 +297,7 @@ menu() {
                      mapfile -t ips < <(resolve "$arg")
                      (( ${#ips[@]} )) && unban "${ips[@]}" && print_list ;;
             a|A)     unban_all; print_list ;;
+            c|C)     print_countries ;;
             q|Q|quit|exit) return ;;
             *)       echo "  ${YEL}unknown choice${R}" ;;
         esac
@@ -187,6 +312,7 @@ case "${1:-}" in
     show)        shift; (( $# )) || die "usage: $0 show <IP>"; for ip in "$@"; do show_ip "$ip"; done ;;
     unban)       shift; (( $# )) || die "usage: $0 unban <IP>..."; unban "$@" ;;
     unban-all)   unban_all ;;
-    -h|--help)   sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' ;;
+    countries)   print_countries ;;
+    -h|--help)   sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
     *)           die "unknown command '$1' (see --help)" ;;
 esac
