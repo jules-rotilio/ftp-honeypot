@@ -1,5 +1,7 @@
 /var/log/ftp-honeypot/ftp-honeypot.log {
     weekly
+    # also rotate early (checked daily) once the file passes 50 MB
+    maxsize 50M
     rotate 8
     compress
     delaycompress

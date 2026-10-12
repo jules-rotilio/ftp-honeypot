@@ -4,11 +4,28 @@
 #
 # Run monthly by ftp-honeypot-geoip-update.timer. No account or API key needed.
 # Data: IP Geolocation by DB-IP (https://db-ip.com), CC BY 4.0.
+#
+# The download is parsed by an unprivileged, sandboxed systemd service
+# (DynamicUser). Running this script by hand as root just starts that service,
+# so root never touches the downloaded file.
 
 set -euo pipefail
 
+SERVICE=ftp-honeypot-geoip-update.service
+
+if [[ $EUID -eq 0 && -z ${INVOCATION_ID:-} && -z ${GEOIP_DB:-} ]] \
+   && systemctl cat "$SERVICE" >/dev/null 2>&1; then
+    echo "Updating through $SERVICE (unprivileged)..."
+    rc=0
+    systemctl start "$SERVICE" || rc=$?      # oneshot: waits until it finishes
+    journalctl -u "$SERVICE" -n 3 --no-pager -o cat 2>/dev/null || true
+    exit $rc
+fi
+
 DEST=${GEOIP_DB:-/var/lib/ftp-honeypot/dbip-city-lite.mmdb}
 BASE=https://download.db-ip.com/free
+MAX_GZ=$(( 500 * 1024 * 1024 ))     # refuse downloads larger than this
+MAX_DB=$(( 1024 * 1024 * 1024 ))    # refuse anything that unpacks larger (gzip bomb)
 
 dir=$(dirname "$DEST")
 mkdir -p "$dir"
@@ -18,8 +35,14 @@ trap 'rm -f "$tmp" "$tmp.gz"' EXIT
 # A new file is published at the start of each month: try this month, then last month.
 for month in "$(date -u +%Y-%m)" "$(date -u -d "$(date -u +%Y-%m-15) -1 month" +%Y-%m)"; do
     url="$BASE/dbip-city-lite-$month.mmdb.gz"
-    if curl -fsSL --retry 2 --max-time 300 -o "$tmp.gz" "$url"; then
-        gunzip -c "$tmp.gz" > "$tmp"
+    if curl -fsSL --proto '=https' --retry 2 --max-time 300 --max-filesize "$MAX_GZ" \
+            -o "$tmp.gz" "$url"; then
+        # Unpack at most MAX_DB+1 bytes; reaching that means the file is too big.
+        { gunzip -c "$tmp.gz" || true; } | head -c $(( MAX_DB + 1 )) > "$tmp"
+        size=$(stat -c %s "$tmp")
+        if (( size > MAX_DB )); then
+            echo "refusing $url: unpacks to more than $(( MAX_DB / 1024 / 1024 )) MB" >&2; exit 1
+        fi
         # Refuse to install anything the reader can't open.
         python3 -c 'import sys, maxminddb; maxminddb.open_database(sys.argv[1]).get("1.1.1.1")' "$tmp" 2>/dev/null \
             || { echo "downloaded file is not a valid database: $url" >&2; exit 1; }

@@ -11,6 +11,8 @@ Configuration (environment variables, set them in the systemd unit):
   HONEYPOT_LOG      path of the JSON log file    (default: /var/log/ftp-honeypot/ftp-honeypot.log)
   HONEYPOT_BANNER   greeting sent to clients     (default: a ProFTPD-looking banner)
   HONEYPOT_MAX_CONN max simultaneous sessions    (default: 100)
+  HONEYPOT_MAX_LOG_MB  log size above which only connections are logged,
+                       not commands/credentials (default: 200)
 """
 
 import asyncio
@@ -23,8 +25,10 @@ PORT = int(os.environ.get("HONEYPOT_PORT", "21"))
 LOG = os.environ.get("HONEYPOT_LOG", "/var/log/ftp-honeypot/ftp-honeypot.log")
 BANNER = os.environ.get("HONEYPOT_BANNER", "220 ProFTPD 1.3.8 Server (Debian) ready.")
 MAX_CONN = int(os.environ.get("HONEYPOT_MAX_CONN", "100"))
+MAX_LOG = int(os.environ.get("HONEYPOT_MAX_LOG_MB", "200")) * 1024 * 1024
 
 MAX_LINE = 512        # bytes kept from each command
+READ_LIMIT = 4096     # longest line accepted from a client; longer = hang up
 MAX_COMMANDS = 20     # commands per session before we hang up
 IDLE_TIMEOUT = 30     # seconds without a command before we hang up
 FAIL_DELAY = 2        # seconds to wait before answering a password (slows brute force)
@@ -41,12 +45,20 @@ def log(event: str, src: str, **fields) -> None:
     }
     record.update(fields)
     line = json.dumps(record, ensure_ascii=True)
+    # Disk-fill guard: past MAX_LOG, keep only "connect" lines (what fail2ban
+    # needs to ban) and drop the details until logrotate shrinks the file.
+    if event != "connect":
+        try:
+            if os.path.getsize(LOG) > MAX_LOG:
+                return
+        except OSError:
+            pass
     try:
         with open(LOG, "a", encoding="ascii") as f:
             f.write(line + "\n")
     except OSError as exc:
         print(f"cannot write log: {exc}", file=sys.stderr)
-    print(line, flush=True)  # also goes to the journal
+    print(line, flush=True)  # also goes to the journal (size-capped by journald)
 
 
 def clean(raw: bytes) -> str:
@@ -99,6 +111,9 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
 
                 writer.write((reply + "\r\n").encode("utf-8", errors="replace"))
                 await writer.drain()
+        except (ValueError, asyncio.LimitOverrunError, asyncio.IncompleteReadError):
+            # Line longer than READ_LIMIT (readline raises ValueError): hang up.
+            log("cmd", ip, cmd="<line longer than %d bytes, connection closed>" % READ_LIMIT)
         except (asyncio.TimeoutError, ConnectionError, OSError):
             pass
         finally:
@@ -112,7 +127,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
 
 async def main() -> None:
     # host=None binds every interface, IPv4 and IPv6.
-    server = await asyncio.start_server(handle, host=None, port=PORT, reuse_address=True)
+    server = await asyncio.start_server(handle, host=None, port=PORT, reuse_address=True,
+                                        limit=READ_LIMIT)
     addrs = ", ".join(str(s.getsockname()[:2]) for s in server.sockets)
     print(f"ftp-honeypot listening on {addrs}", flush=True)
     async with server:

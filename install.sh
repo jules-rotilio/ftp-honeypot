@@ -61,7 +61,7 @@ do_uninstall() {
     fi
 
     rm -f /etc/logrotate.d/$APP /usr/local/sbin/$APP-bans /usr/local/sbin/$APP-geoip-update
-    rm -rf "$PREFIX" /var/lib/$APP
+    rm -rf "$PREFIX" /var/lib/$APP /var/lib/private/$APP
     if id "$APP" >/dev/null 2>&1; then userdel "$APP" 2>/dev/null || true; fi
     c_ok "uninstalled. Logs kept in $LOGDIR (delete them yourself if you want)."
 }

@@ -130,7 +130,7 @@ Logs rotate weekly and 8 weeks are kept (`/etc/logrotate.d/ftp-honeypot`).
 
 | What | Where |
 |---|---|
-| Port, banner, log path, max sessions | `Environment=` lines in `/etc/systemd/system/ftp-honeypot.service`, then `systemctl daemon-reload && systemctl restart ftp-honeypot` |
+| Port, banner, log path, max sessions, log size cap | `Environment=` lines in `/etc/systemd/system/ftp-honeypot.service`, then `systemctl daemon-reload && systemctl restart ftp-honeypot` |
 | Ban time, whitelist (`ignoreip`) | `/etc/fail2ban/jail.d/ftp-honeypot.conf`, then `systemctl reload fail2ban` |
 | How long ban history is kept (`dbpurgeage`, must be ≥ `bantime.maxtime`) | `/etc/fail2ban/fail2ban.d/ftp-honeypot.conf`, then `systemctl restart fail2ban` |
 | What counts as a hit | `/etc/fail2ban/filter.d/ftp-honeypot.conf` |
@@ -155,7 +155,10 @@ You should see the attempt in the log, and no ban. To check banning without risk
 - **Bans cover Docker too.** fail2ban's usual nftables ban sits in the `input` hook, which Docker-published ports never go through (their traffic is forwarded to the container). This jail instead drops banned IPs in the `prerouting` hook, before Docker sees the packet, in its own `f2b-honeypot` table so it doesn't touch your other jails. Check it with `sudo nft list table inet f2b-honeypot`.
 
 - The honeypot never accepts a login, never opens a data connection and never touches the filesystem except its own log file.
-- Input is capped at 512 bytes per line and 20 commands per session, and everything is JSON-escaped before logging. A forged `"event": "connect"` string sent by an attacker does **not** trigger the fail2ban filter.
+- Input is capped: lines longer than 4 KB end the connection, 512 bytes are kept per command, 20 commands per session. Everything is JSON-escaped before logging, so an attacker can't forge a log line: a fake `"event": "connect"` sent as a password does **not** trigger the fail2ban filter.
+- `ftp-honeypot-bans` prints attacker-supplied text (usernames, passwords, commands) and GeoIP names with control characters escaped, so terminal escape sequences can't reach your terminal.
+- **Disk-fill guard:** past 200 MB (`HONEYPOT_MAX_LOG_MB`), the honeypot logs only connections, which is all fail2ban needs, and drops the details until the log is rotated. logrotate also rotates early once the file passes 50 MB.
+- The GeoIP database is downloaded (HTTPS only, size-capped, gzip-bomb-checked) and parsed by a sandboxed systemd service running as a throwaway unprivileged user. `sudo ftp-honeypot-geoip-update` starts that service rather than parsing the file as root.
 - The systemd unit uses `ProtectSystem=strict`, `NoNewPrivileges`, a syscall filter, memory/task limits, and more. `systemd-analyze security ftp-honeypot` shows the score.
 - Keep your **real** services (SSH…) hardened anyway. This is an early-warning and noise-reduction tool, not a firewall.
 
